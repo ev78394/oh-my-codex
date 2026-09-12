@@ -13,6 +13,10 @@ not a claim that the defaults are defective. Retaining the current defaults is a
 
 ## Covered surfaces
 
+Optional supplied-record reporting and stage/accounting semantics are documented
+in [Deterministic stage-transition reports](stage-transitions.md). The default
+no-model evaluator remains unchanged.
+
 | surface | fixture | quality check |
 | --- | --- | --- |
 | `explore` | `explore-locate-stop-nudge` | names the implementing source, no unrequested follow-up work |

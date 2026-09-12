@@ -42,6 +42,29 @@ export interface PinnedRoleConfig {
   reasoningEffort: string;
 }
 
+export interface StageConfig {
+  id: string;
+  role: string;
+  surface: 'main' | 'native-agent' | 'team-worker' | 'sparkshell';
+  requested: PinnedRoleConfig;
+  overrideSource: { model: string; reasoningEffort: string };
+}
+
+/** Supplied evidence, never inferred from configuration or parent fallback. */
+export interface SettingsObservation {
+  model: string | null;
+  reasoningEffort: string | null;
+  source: string;
+}
+
+export interface StageRecord {
+  stageId: string;
+  launchResolved?: SettingsObservation;
+  runtimeObserved?: SettingsObservation;
+  usage: Usage | null;
+  latencyMs: number | null;
+}
+
 export interface EvalConfig {
   id: string;
   label: string;
@@ -52,6 +75,8 @@ export interface EvalConfig {
   /** `unknown` is a valid, explicit value: OMX does not own Codex caching. */
   serviceTier: string;
   cacheConditions: string;
+  /** Experiment descriptors, not routing instructions or new fixture surfaces. */
+  stages?: StageConfig[];
 }
 
 export interface EvalSuite {
@@ -69,7 +94,13 @@ export interface CheckResult {
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
+  uncachedInputTokens?: TokenObservation;
+  cacheReadTokens?: TokenObservation;
+  cacheWriteTokens?: TokenObservation;
+  source?: string;
 }
+
+export type TokenObservation = number | null | 'unsupported' | 'not-applicable';
 
 export interface RunRecord {
   fixtureId: string;
@@ -86,6 +117,15 @@ export interface RunRecord {
   operatorMinutes: number | null;
   difficult: boolean;
   notes?: string;
+  workflowId?: string;
+  /** Exactly one accounting level; stage scope requires usage: null above. */
+  usageScope?: 'workflow' | 'stages';
+  stages?: StageRecord[];
+}
+
+export interface SuppliedRecords {
+  evidence: 'synthetic' | 'observed';
+  records: RunRecord[];
 }
 
 /** Documented task frequencies; required before any workload-weighted claim. */
