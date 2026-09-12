@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import type {
   CheckResult,
   EvalConfig,
@@ -7,9 +8,133 @@ import type {
   EvalSuite,
   QualityCheck,
   RunRecord,
+  SuppliedRecords,
 } from './types.js';
 
 export class EvalSuiteError extends Error {}
+
+const text = z.string().refine((value) => value.trim().length > 0, 'must be nonempty');
+const tokens = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const duration = z.number().nonnegative().finite().nullable();
+const pair = z.object({ model: text, reasoningEffort: text }).strict();
+const stageConfig = z.object({
+  id: text,
+  role: text,
+  surface: z.enum(['main', 'native-agent', 'team-worker', 'sparkshell']),
+  requested: pair,
+  overrideSource: pair,
+}).strict();
+const observation = z.object({
+  model: text.nullable(), reasoningEffort: text.nullable(), source: text,
+}).strict();
+const tokenObservation = z.union([tokens, z.enum(['unsupported', 'not-applicable'])]).nullable();
+const usage = z.object({
+  inputTokens: tokens,
+  outputTokens: tokens,
+  uncachedInputTokens: tokenObservation.optional(),
+  cacheReadTokens: tokenObservation.optional(),
+  cacheWriteTokens: tokenObservation.optional(),
+  source: text.optional(),
+}).strict().superRefine((value, ctx) => {
+  const parts = [value.uncachedInputTokens, value.cacheReadTokens, value.cacheWriteTokens];
+  if (parts.some((part) => part !== undefined && part !== null) && !value.source) {
+    ctx.addIssue({ code: 'custom', message: 'usage breakdown requires a source' });
+  }
+  // Reads and uncached input partition inclusive input. Writes are separately
+  // observed provider metadata; they are not added to either input or reads.
+  const knownInput = [value.uncachedInputTokens, value.cacheReadTokens]
+    .reduce<number>((sum, part) => sum + (typeof part === 'number' ? part : 0), 0);
+  if (knownInput > value.inputTokens) {
+    ctx.addIssue({ code: 'custom', message: 'input subsets exceed inputTokens' });
+  }
+  if ([value.uncachedInputTokens, value.cacheReadTokens].every((part) =>
+    typeof part === 'number' || part === 'not-applicable')
+      && knownInput !== value.inputTokens) {
+    ctx.addIssue({ code: 'custom', message: 'uncached input plus cache reads must equal inputTokens' });
+  }
+});
+const runRecord = z.object({
+  fixtureId: text, configId: text,
+  outcome: z.enum(['pass', 'fail', 'error']),
+  checks: z.array(z.object({
+    name: text, kind: z.enum(['must-include', 'must-not-include', 'exact-set']),
+    passed: z.boolean(), detail: z.string().optional(),
+  }).strict()),
+  requiredChecksPassed: z.boolean().nullable(),
+  retries: tokens, latencyMs: duration, usage: usage.nullable(), operatorMinutes: duration,
+  difficult: z.boolean(), notes: z.string().optional(),
+  workflowId: text.optional(), usageScope: z.enum(['workflow', 'stages']).optional(),
+  stages: z.array(z.object({
+    stageId: text, launchResolved: observation.optional(), runtimeObserved: observation.optional(),
+    usage: usage.nullable(), latencyMs: duration,
+  }).strict()).min(1).optional(),
+}).strict();
+
+function parse<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
+  const result = schema.safeParse(value);
+  if (!result.success) throw new EvalSuiteError(`${label}: ${result.error.message}`);
+  return result.data;
+}
+
+/** Shared import/report boundary. Repeated trials are deliberately unsupported. */
+export function validateRunRecords(records: unknown, suite?: EvalSuite): RunRecord[] {
+  const rows = parse(z.array(runRecord), records, 'invalid run records');
+  const seen = new Set<string>();
+  const workflows = new Set<string>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.fixtureId, row.configId]);
+    if (seen.has(key)) throw new EvalSuiteError(`duplicate fixture/config record ${key}; repeated trials unsupported`);
+    seen.add(key);
+    if (row.workflowId) {
+      const workflow = JSON.stringify([row.configId, row.workflowId]);
+      if (workflows.has(workflow)) throw new EvalSuiteError(`duplicate workflow ${workflow}`);
+      workflows.add(workflow);
+    }
+    if (row.stages) {
+      if (!row.workflowId || !row.usageScope) throw new EvalSuiteError(`${key}: stages require workflowId and usageScope`);
+      if (new Set(row.stages.map((stage) => stage.stageId)).size !== row.stages.length) {
+        throw new EvalSuiteError(`${key}: duplicate stage id`);
+      }
+      if (row.usageScope === 'stages' && row.usage !== null) {
+        throw new EvalSuiteError(`${key}: stage accounting requires workflow usage to be null`);
+      }
+    } else if (row.usageScope === 'stages') {
+      throw new EvalSuiteError(`${key}: stage accounting requires stages`);
+    }
+    if (!suite) continue;
+    const fixture = suite.fixtures.find((entry) => entry.id === row.fixtureId);
+    const config = suite.configs.find((entry) => entry.id === row.configId);
+    if (!fixture || (!config && row.configId !== 'deterministic-no-model')) {
+      throw new EvalSuiteError(`${key}: unknown fixture or config`);
+    }
+    if (!config && (!fixture.deterministicBaseline || row.stages)) {
+      throw new EvalSuiteError(`${key}: invalid deterministic baseline record`);
+    }
+    if (fixture.checks.length !== row.checks.length || fixture.checks.some((check) =>
+      row.checks.filter((result) => result.name === check.name && result.kind === check.kind).length !== 1)) {
+      throw new EvalSuiteError(`${key}: response checks must match the fixture checks`);
+    }
+    const expected = config?.stages?.map((stage) => stage.id) ?? [];
+    const actual = row.stages?.map((stage) => stage.stageId) ?? [];
+    if (expected.length !== actual.length || expected.some((id) => !actual.includes(id))) {
+      throw new EvalSuiteError(`${key}: stages must match configuration; use null observations for missing evidence`);
+    }
+  }
+  return rows;
+}
+
+export function loadRunRecords(path: string, suite: EvalSuite): SuppliedRecords {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (error) {
+    throw new EvalSuiteError(`invalid records JSON in ${path}: ${(error as Error).message}`);
+  }
+  const supplied = parse(z.object({
+    evidence: z.enum(['synthetic', 'observed']), records: z.array(runRecord).min(1),
+  }).strict(), value, 'invalid supplied records');
+  return { ...supplied, records: validateRunRecords(supplied.records, suite) };
+}
 
 function readJsonDir<T>(dir: string): T[] {
   let entries: string[];
@@ -69,8 +194,19 @@ function validateConfigs(configs: EvalConfig[], fixtures: EvalFixture[]): void {
     throw new EvalSuiteError(`suite must declare exactly one baseline, found ${baselines.length}`);
   }
   const surfaces = new Set(fixtures.map((fixture) => fixture.surface));
+  const ids = new Set<string>();
   for (const config of configs) {
     if (!config.id) throw new EvalSuiteError('configuration is missing an id');
+    if (ids.has(config.id) || config.id === 'deterministic-no-model') {
+      throw new EvalSuiteError(`duplicate or reserved configuration id ${config.id}`);
+    }
+    ids.add(config.id);
+    if (config.stages !== undefined) {
+      parse(z.array(stageConfig).min(1), config.stages, `configuration ${config.id} stages`);
+      if (new Set(config.stages.map((stage) => stage.id)).size !== config.stages.length) {
+        throw new EvalSuiteError(`configuration ${config.id} has duplicate stage ids`);
+      }
+    }
     if (!config.omxRevision?.trim()) {
       throw new EvalSuiteError(`configuration ${config.id} is not pinned to an OMX revision`);
     }
@@ -102,10 +238,10 @@ export function validateSuite(suite: EvalSuite): EvalSuite {
   return suite;
 }
 
-export function loadSuite(suiteDir: string): EvalSuite {
+export function loadSuite(suiteDir: string, configsDir = join(suiteDir, 'configs')): EvalSuite {
   const suite: EvalSuite = {
     fixtures: readJsonDir<EvalFixture>(join(suiteDir, 'fixtures')),
-    configs: readJsonDir<EvalConfig>(join(suiteDir, 'configs')),
+    configs: readJsonDir<EvalConfig>(configsDir),
   };
   return validateSuite(suite);
 }
@@ -192,7 +328,10 @@ export function baselineRecord(
     requiredChecksPassed: null,
     retries: 0,
     latencyMs: null,
-    usage: { inputTokens: 0, outputTokens: 0 },
+    usage: {
+      inputTokens: 0, outputTokens: 0, uncachedInputTokens: 0, cacheReadTokens: 0,
+      cacheWriteTokens: 'not-applicable', source: 'deterministic extractor; no model invoked',
+    },
     operatorMinutes: 0,
     difficult: false,
     notes: 'deterministic extractor, no model invoked',
