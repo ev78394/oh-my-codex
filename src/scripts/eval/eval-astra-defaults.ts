@@ -18,7 +18,7 @@ try {
   if (options.has('--configs') && !options.has('--report')) throw new Error('--configs requires --report');
   const suite = loadSuite(suiteDir, options.get('--configs'));
   const deterministic = suite.fixtures.filter((fixture) => fixture.deterministicBaseline);
-  if (deterministic.length === 0) {
+  if (!options.has('--report') && deterministic.length === 0) {
     throw new Error('suite declares no deterministic no-model baseline');
   }
   const records = deterministic.map((fixture) => baselineRecord(fixture));

@@ -27,8 +27,10 @@ declare failures. It is not an execution-success gate. Invalid input returns the
 existing `{pass:false, score:0}` error contract and a diagnostic on stderr.
 
 `--configs` selects an alternate config directory while reusing the same fixtures;
-it is only available with `--report`. The report adds the existing deterministic
-Sparkshell baselines. The supplied JSON envelope requires `evidence` (`synthetic`
+it is only available with `--report`. The report adds any deterministic baselines
+declared by the suite, including the existing Sparkshell controls. Supplied-record
+reports also accept suites without baselines; the default evaluator still requires
+at least one. The supplied JSON envelope requires `evidence` (`synthetic`
 or `observed`) and `records`. This label describes the supplied records, not those
 locally computed no-model controls. `observed` is a submitter's assertion, not
 independent verification by the loader. Supplied checks must match fixture names
