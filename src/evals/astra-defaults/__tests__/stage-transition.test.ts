@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -233,6 +233,34 @@ describe('model-free report entrypoint', () => {
     assert.equal(first.stdout, second.stdout);
     assert.equal(first.stdout, readFileSync(join(example, 'report.md'), 'utf-8'));
     assert.match(first.stdout, /deterministic-no-model/);
+  });
+
+  it('reports supplied records without baselines while the default evaluator still requires them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omx-eval-no-baselines-'));
+    try {
+      mkdirSync(join(dir, 'fixtures'));
+      mkdirSync(join(dir, 'configs'));
+      for (const fixture of suite.fixtures) {
+        const custom = { ...fixture };
+        delete custom.deterministicBaseline;
+        writeFileSync(join(dir, 'fixtures', `${custom.id}.json`), JSON.stringify(custom));
+      }
+      for (const config of suite.configs) {
+        writeFileSync(join(dir, 'configs', `${config.id}.json`), JSON.stringify(config));
+      }
+      const result = spawnSync(process.execPath,
+        [script, dir, '--report', join(example, 'records.json')], { encoding: 'utf-8' });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `${renderReport(loadSuite(dir), supplied.records, null, supplied.evidence)}\n`);
+      assert.doesNotMatch(result.stdout, /deterministic-no-model/);
+
+      const defaultResult = spawnSync(process.execPath, [script, dir], { encoding: 'utf-8' });
+      assert.equal(defaultResult.status, 1);
+      assert.match(defaultResult.stderr, /suite declares no deterministic no-model baseline/);
+      assert.deepEqual(JSON.parse(defaultResult.stdout), { pass: false, score: 0 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('fails invalid external records and arguments without a success report', () => {
