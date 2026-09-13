@@ -59,12 +59,12 @@ check outcomes are synthetic; no fixture implementation or required command ran.
   unknown. A launch receipt, explicit pin, or parent fallback never fills runtime
   evidence. An override that changes launch settings should be identified in the
   launch source; separate requested provenance remains intact.
-- Existing `roles` pins and configs still load. They are legacy configured
-  values, not service observations. For staged workflows, `stages.requested`
-  describes the proposed stage pair; `roles` remains the configuration for
-  unstaged fixture surfaces. Example role pins use a deliberate uniform-medium
-  control, not a reproduction of shipped role efforts. No model or effort is
-  silently substituted or ranked.
+- Existing `roles` pins and configs still load. They are declared comparison
+  values, not launch-resolved or runtime observations. For staged workflows,
+  `stages.requested` describes the proposed stage pair; `roles` remains the
+  configuration for unstaged fixture surfaces. The primary baseline and example
+  role pins use a deliberate uniform-medium comparison, not a reproduction of
+  shipped role efforts. No model or effort is silently substituted or ranked.
 
 The loader rejects duplicate fixture/config records (including different workflow
 IDs) and reused workflow IDs within a config. Repeated trials remain unsupported;
@@ -133,7 +133,8 @@ compute or quality, and an accepted plan does not prove inexpensive execution.
 
 ## Deferred work
 
-This does not resolve #3655's owner-gated live comparison. It does not fix the
-historical `astra-defaults.json` shipped-effort label or upgrade the executor's
-response-content fixture into an actual editing/check-running experiment. Those
-remain separate work; existing Luna configs and Sparkshell are preserved.
+This does not resolve #3655's owner-gated live comparison. The corrected
+`astra-defaults.json` label now identifies its uniform-medium comparison role;
+it does not reconstruct shipped role efforts. Upgrading the executor's
+response-content fixture into an actual editing/check-running experiment remains
+separate work; existing Luna configs and Sparkshell are preserved.
